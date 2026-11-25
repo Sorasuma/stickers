@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Смоляные стикеры на 3D-iPhone</title>
+<style>
+:root{--tx:#f5f5f7;--mut:#a1a1a6;--ln:rgba(255,255,255,.14);--ac:#0a84ff}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;font:14px/1.4 -apple-system,"Segoe UI",Roboto,sans-serif;color:var(--tx);background:radial-gradient(circle at 40% 30%,#3a3d46,#14151a 70%)}
+#stage{position:fixed;inset:0}
+#stage canvas{display:block;touch-action:none}
+#panel{position:fixed;top:12px;right:12px;bottom:12px;width:300px;overflow:auto;background:rgba(28,28,32,.78);backdrop-filter:blur(16px);border:1px solid var(--ln);border-radius:18px;padding:16px}
+h1{font-size:17px;margin:0 0 4px}
+.hint{color:var(--mut);font-size:12px;margin:0 0 10px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:16px 0 6px}
+label{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;color:var(--mut);font-size:13px}
+input[type=range]{width:100%;accent-color:var(--ac)}
+input[type=number]{width:90px;background:rgba(255,255,255,.08);border:1px solid var(--ln);border-radius:8px;color:var(--tx);padding:6px 8px;font:inherit}
+button,.btn{font:inherit;color:var(--tx);background:rgba(255,255,255,.09);border:1px solid var(--ln);border-radius:10px;padding:8px 12px;cursor:pointer;text-align:center}
+.btn.pri{background:var(--ac);border-color:var(--ac);display:block;margin-bottom:6px}
+.row{display:flex;gap:6px;margin-top:6px}.row>*{flex:1}
+#note{color:#ffd60a;font-size:12px;margin-top:8px}
+@media (max-width:700px){#panel{top:auto;left:12px;width:auto;height:46vh}}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"}}</script>
+</head><body>
+<div id="stage"></div>
+<div id="panel">
+<h1>Смоляные стикеры</h1>
+<p class="hint">Тяните стикер по телефону, чтобы переместить. Остальное перетаскивание вращает модель, колёсико приближает.</p>
+<label class="btn pri" style="margin-top:0">+ Добавить стикер<input id="fs" type="file" accept="image/*" multiple hidden></label>
+<label class="btn" style="margin:0">Загрузить свою модель (.glb)<input id="fm" type="file" accept=".glb,.gltf" hidden></label>
+<div id="note"></div>
+
+<h2>Выбранный стикер</h2>
+<label>Ширина, мм <input id="size" type="number" min="3" max="120" step="0.5" value="30"></label>
+<label>Поворот, ° <input id="rot" type="number" min="-360" max="360" step="1" value="0"></label>
+<label>Обводка</label><input id="border" type="range" min="4" max="40" value="16">
+<label>Выпуклость капли</label><input id="bump" type="range" min="0" max="30" step=".5" value="10">
+<label>Глянец смолы</label><input id="gloss" type="range" min="0" max="1" step=".01" value=".97">
+<div class="row"><button id="del">Удалить</button></div>
+
+<h2>Вид и свет</h2>
+<div class="row"><button id="vback">Сзади</button><button id="vfront">Спереди</button></div>
+<label>Угол света</label><input id="la" type="range" min="0" max="6.28" step=".01" value="1">
+<label>Яркость света</label><input id="li" type="range" min="0" max="5" step=".05" value="2.2">
+<label>Крутить свет <input id="spinL" type="checkbox" checked></label>
+<label>Автовращение телефона <input id="spinP" type="checkbox"></label>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {DecalGeometry} from 'three/addons/geometries/DecalGeometry.js';
+import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
+
+const MODEL_URL='models/iphone.glb';   // путь к вашей модели
+const PHONE_MM=147.6;                   // высота телефона в мм (iPhone 15). Модель масштабируется до неё
+const $=id=>document.getElementById(id), V3=THREE.Vector3;
+
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+$('stage').appendChild(renderer.domElement);
+const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(30,1,1,4000);
+camera.position.set(160,70,360);
+scene.environment=new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(),.04).texture;
+const key=new THREE.DirectionalLight(0xffffff,2.2);scene.add(key,new THREE.AmbientLight(0xffffff,.2));
+const controls=new OrbitControls(camera,renderer.domElement);
+Object.assign(controls,{enableDamping:true,enablePan:false,minDistance:140,maxDistance:800,autoRotateSpeed:2});
+function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix()}
+addEventListener('resize',resize);resize();
+
+/* ---------- модель ---------- */
+const phone=new THREE.Group();scene.add(phone);
+let meshes=[],thick=8;
+const stickers=[];let sel=null;
+function setModel(obj){
+  stickers.slice().forEach(removeSticker);
+  phone.clear();
+  const box=new THREE.Box3().setFromObject(obj),sz=box.getSize(new V3()),c=box.getCenter(new V3());
+  const k=PHONE_MM/Math.max(sz.x,sz.y,sz.z);
+  obj.scale.multiplyScalar(k);obj.position.sub(c.multiplyScalar(k));
+  phone.add(obj);phone.updateMatrixWorld(true);
+  meshes=[];obj.traverse(o=>{if(o.isMesh)meshes.push(o)});
+  thick=Math.min(sz.x,sz.y,sz.z)*k;
+}
+function fallback(){
+  setModel(new THREE.Mesh(new THREE.BoxGeometry(71.6,147.6,8),new THREE.MeshStandardMaterial({color:0x2b2f3a,metalness:.7,roughness:.3})));
+}
+const loader=new GLTFLoader();
+function loadModel(url){loader.load(url,g=>{setModel(g.scene);$('note').textContent=''},undefined,()=>{
+  fallback();$('note').textContent='Модель '+MODEL_URL+' не найдена или сжата Draco. Показана заглушка, загрузите .glb кнопкой выше.'})}
+loadModel(MODEL_URL);
+$('fm').onchange=e=>{const f=e.target.files[0];if(f)loadModel(URL.createObjectURL(f));e.target.value=''};
+
+/* ---------- текстуры стикера ---------- */
+const mk=(w,h)=>{const c=document.createElement('canvas');c.width=w;c.height=h;return c};
+function buildTex(s){
+  const img=s.img,M=420,k=Math.min(M/img.width,M/img.height);
+  const w=Math.round(img.width*k),h=Math.round(img.height*k),b=s.border,pad=b+12,W=w+pad*2,H=h+pad*2;
+  const t=mk(W,H),tx=t.getContext('2d');tx.drawImage(img,pad,pad,w,h);
+  tx.globalCompositeOperation='source-in';tx.fillStyle='#fff';tx.fillRect(0,0,W,H);
+  const m=mk(W,H),mx=m.getContext('2d');
+  for(const r of [b,b*.6,b*.3])for(let i=0;i<40;i++){const a=i/40*6.2832;mx.drawImage(t,Math.cos(a)*r,Math.sin(a)*r)}
+  mx.drawImage(t,0,0);
+  const c=mk(W,H),cx=c.getContext('2d');cx.drawImage(m,0,0);cx.drawImage(img,pad,pad,w,h);
+  const hc=mk(W,H),hx=hc.getContext('2d');hx.fillStyle='#000';hx.fillRect(0,0,W,H);
+  hx.filter='blur('+(b*.7+4)+'px)';hx.drawImage(m,0,0);
+  s.ar=W/H;
+  const map=new THREE.CanvasTexture(c);map.colorSpace=THREE.SRGBColorSpace;map.anisotropy=8;
+  const bm=new THREE.CanvasTexture(hc);
+  if(s.mat.map)s.mat.map.dispose();if(s.mat.bumpMap)s.mat.bumpMap.dispose();
+  s.mat.map=map;s.mat.bumpMap=bm;s.mat.needsUpdate=true;s.texDirty=false;
+}
+function rebuildDecal(s){
+  if(s.mesh){scene.remove(s.mesh);s.mesh.geometry.dispose()}
+  s.mat.bumpScale=s.bump;s.mat.clearcoatRoughness=1-s.gloss;s.mat.roughness=.5-.4*s.gloss;
+  const z=s.nrm.clone().normalize(),up=Math.abs(z.y)>.95?new V3(0,0,1):new V3(0,1,0);
+  const x=up.clone().cross(z).normalize(),y=z.clone().cross(x);
+  const q=new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x,y,z))
+    .multiply(new THREE.Quaternion().setFromAxisAngle(new V3(0,0,1),THREE.MathUtils.degToRad(s.rot)));
+  const depth=Math.max(thick*.6,1);
+  const geo=new DecalGeometry(s.target,s.pos,new THREE.Euler().setFromQuaternion(q),new V3(s.size,s.size/s.ar,depth));
+  s.mesh=new THREE.Mesh(geo,s.mat);s.mesh.renderOrder=1+stickers.indexOf(s);s.mesh.userData.s=s;
+  scene.add(s.mesh);s.dirty=false;
+}
+function removeSticker(s){
+  scene.remove(s.mesh);s.mesh?.geometry.dispose();s.mat.map?.dispose();s.mat.bumpMap?.dispose();s.mat.dispose();
+  stickers.splice(stickers.indexOf(s),1);if(sel===s)sel=null;
+}
+function select(s){
+  sel=s;stickers.forEach(t=>t.mat.emissive.set(t===s?0x1a4a80:0x000000));
+  if(!s)return;$('size').value=s.size;$('rot').value=s.rot;$('border').value=s.border;$('bump').value=s.bump;$('gloss').value=s.gloss;
+}
+function addSticker(img){
+  const r=new THREE.Raycaster();r.setFromCamera(new THREE.Vector2(0,0),camera);
+  const hit=r.intersectObjects(meshes,false)[0];
+  if(!hit){$('note').textContent='Наведите камеру на телефон и добавьте стикер снова.';return}
+  $('note').textContent='';
+  const s={img,size:30,rot:0,border:16,bump:10,gloss:.97,pos:hit.point.clone(),target:hit.object,
+    nrm:hit.face.normal.clone().transformDirection(hit.object.matrixWorld),
+    mat:new THREE.MeshPhysicalMaterial({transparent:true,depthWrite:false,roughness:.1,metalness:0,clearcoat:1,
+      envMapIntensity:1.4,polygonOffset:true,polygonOffsetFactor:-4,polygonOffsetUnits:-4})};
+  stickers.push(s);buildTex(s);rebuildDecal(s);select(s);
+}
+$('fs').onchange=e=>{
+  [...e.target.files].forEach(f=>{const im=new Image();im.onload=()=>addSticker(im);im.src=URL.createObjectURL(f)});
+  e.target.value='';
+};
+
+/* ---------- перетаскивание по поверхности ---------- */
+const ray=new THREE.Raycaster(),ndc=new THREE.Vector2();let drag=null;
+function pick(e,objs){const r=renderer.domElement.getBoundingClientRect();
+  ndc.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(ndc,camera);
+  return ray.intersectObjects(objs,false)}
+const cv=renderer.domElement;
+cv.addEventListener('pointerdown',e=>{
+  const h=pick(e,stickers.map(s=>s.mesh).filter(Boolean))[0];
+  if(h){drag=h.object.userData.s;select(drag);controls.enabled=false;cv.setPointerCapture(e.pointerId)}
+});
+cv.addEventListener('pointermove',e=>{
+  if(!drag)return;const h=pick(e,meshes)[0];if(!h)return;
+  drag.pos.copy(h.point);drag.target=h.object;
+  drag.nrm.copy(h.face.normal).transformDirection(h.object.matrixWorld);drag.dirty=true;
+});
+const end=()=>{drag=null;controls.enabled=true};
+cv.addEventListener('pointerup',end);cv.addEventListener('pointercancel',end);
+
+/* ---------- панель ---------- */
+const bind=(id,k,tex)=>$(id).addEventListener('input',e=>{
+  const v=parseFloat(e.target.value);if(!sel||isNaN(v))return;
+  sel[k]=k==='size'?Math.max(1,v):v;sel.dirty=true;if(tex)sel.texDirty=true;
+});
+bind('size','size');bind('rot','rot');bind('border','border',true);bind('bump','bump');bind('gloss','gloss');
+$('del').onclick=()=>{if(sel)removeSticker(sel)};
+const D=Math.hypot(...camera.position.toArray());
+const view=z=>{camera.position.set(0,0,z*D);controls.update()};
+$('vback').onclick=()=>view(-1);$('vfront').onclick=()=>view(1);
+$('li').oninput=e=>key.intensity=+e.target.value;
+let la=1;function setLight(a){la=a;key.position.set(Math.cos(a)*300,220,Math.sin(a)*300);scene.environmentRotation.y=a}
+$('la').oninput=e=>setLight(+e.target.value);setLight(1);
+
+(function loop(){
+  requestAnimationFrame(loop);
+  if($('spinL').checked&&!drag){setLight((la+.006)%6.2832);$('la').value=la}
+  controls.autoRotate=$('spinP').checked;controls.update();
+  for(const s of stickers)if(s.dirty){if(s.texDirty)buildTex(s);rebuildDecal(s)}
+  renderer.render(scene,camera);
+})();
+</script></body></html>
